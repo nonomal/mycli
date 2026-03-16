@@ -4,6 +4,7 @@ Upcoming (TBD)
 Internal
 ---------
 * Require `sqlglot` 30.x.
+* Handle Click exceptions by hand.
 
 
 1.65.0 (2026/03/16)
