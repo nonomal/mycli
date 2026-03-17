@@ -4,6 +4,7 @@ Upcoming (TBD)
 Internal
 ---------
 * Require `sqlglot` 30.x.
+* Connect toolbar tests to the test database.
 
 
 1.65.0 (2026/03/16)
