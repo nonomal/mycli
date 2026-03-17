@@ -1,6 +1,11 @@
 Upcoming (TBD)
 ==============
 
+Features
+---------
+* Add a `--batch` option as an alternative to STDIN.
+
+
 Internal
 ---------
 * Require `sqlglot` 30.x.
