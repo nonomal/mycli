@@ -4,6 +4,7 @@ Upcoming (TBD)
 Internal
 ---------
 * Require `sqlglot` 30.x.
+* Revert suppression of warnings when `sqlglotrs` is installed.
 
 
 1.65.0 (2026/03/16)
