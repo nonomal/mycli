@@ -1,6 +1,11 @@
 Upcoming (TBD)
 ==============
 
+Features
+---------
+* Support `--username` and `$MYSQL_USER` to set username.
+
+
 Internal
 ---------
 * Require `sqlglot` 30.x.
