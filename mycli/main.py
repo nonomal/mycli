@@ -1921,7 +1921,7 @@ class MyCli:
 @click.option("-h", "--host", envvar="MYSQL_HOST", help="Host address of the database.")
 @click.option("-P", "--port", envvar="MYSQL_TCP_PORT", type=int, help="Port number to use for connection. Honors $MYSQL_TCP_PORT.")
 @click.option("-u", "--user", help="User name to connect to the database.")
-@click.option("-S", "--socket", envvar="MYSQL_UNIX_PORT", help="The socket file to use for connection.")
+@click.option("-S", "--socket", envvar="MYSQL_UNIX_SOCKET", help="The socket file to use for connection.")
 @click.option(
     "-p",
     "--pass",
@@ -2196,6 +2196,7 @@ def cli(
             else:
                 click.secho(alias)
         sys.exit(0)
+
     if list_ssh_config:
         ssh_config = read_ssh_config(ssh_config_path)
         try:
@@ -2210,6 +2211,18 @@ def cli(
             else:
                 click.secho(host_entry)
         sys.exit(0)
+
+    if 'MYSQL_UNIX_PORT' in os.environ:
+        # deprecated 2026-03
+        click.secho(
+            "The MYSQL_UNIX_PORT environment variable is deprecated in favor of MYSQL_UNIX_SOCKET.  "
+            "MYSQL_UNIX_PORT will be removed in a future release.",
+            err=True,
+            fg="red",
+        )
+        if not socket:
+            socket = os.environ['MYSQL_UNIX_PORT']
+
     # Choose which ever one has a valid value.
     database = dbname or database
 

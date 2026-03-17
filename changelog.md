@@ -1,6 +1,11 @@
 Upcoming (TBD)
 ==============
 
+Features
+---------
+* Deprecate `$MYSQL_UNIX_PORT` environment variable in favor of `$MYSQL_UNIX_SOCKET`.
+
+
 Internal
 ---------
 * Require `sqlglot` 30.x.
