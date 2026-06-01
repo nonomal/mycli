@@ -32,7 +32,7 @@ except ImportError:
     LLM_CLI_IMPORTED = False
 from pymysql.cursors import Cursor
 
-from mycli.packages.special.main import Verbosity, parse_special_command
+from mycli.packages.special.main import CommandVerbosity, parse_special_command
 from mycli.packages.sqlresult import SQLResult
 
 log = logging.getLogger(__name__)
@@ -224,7 +224,7 @@ def handle_llm(
     prompt_field_truncate: int,
     prompt_section_truncate: int,
 ) -> tuple[str, str | None, float]:
-    _, verbosity, arg = parse_special_command(text)
+    _, command_verbosity, arg = parse_special_command(text)
     if not LLM_IMPORTED:
         raise FinishIteration(results=[SQLResult(preamble=NEED_DEPENDENCIES)])
     if arg.strip().lower() in ['', 'help', '?', r'\?']:
@@ -262,7 +262,7 @@ def handle_llm(
                 sql = match.group(1).strip()
             else:
                 raise FinishIteration(results=[SQLResult(preamble=output)])
-            return (output if verbosity == Verbosity.SUCCINCT else "", sql, end - start)
+            return (output if command_verbosity == CommandVerbosity.SUCCINCT else "", sql, end - start)
         else:
             run_external_cmd("llm", *args, restart_cli=restart)
             raise FinishIteration(results=None)
@@ -277,7 +277,7 @@ def handle_llm(
             prompt_section_truncate=prompt_section_truncate,
         )
         end = time()
-        if verbosity == Verbosity.SUCCINCT:
+        if command_verbosity == CommandVerbosity.SUCCINCT:
             context = ""
         return (context, sql, end - start)
     except Exception as e:
@@ -309,11 +309,14 @@ def truncate_table_lines(table: list[str], prompt_section_truncate: int) -> list
     if not prompt_section_truncate:
         return table
 
-    truncated_table = []
+    truncated_table: list[str] = []
     running_sum = 0
-    while table and running_sum <= prompt_section_truncate:
+    while table:
         line = table.pop(0)
-        running_sum += sys.getsizeof(line)
+        line_size = sys.getsizeof(line)
+        if running_sum + line_size > prompt_section_truncate:
+            break
+        running_sum += line_size
         truncated_table.append(line)
     return truncated_table
 

@@ -1,3 +1,251 @@
+Upcoming (TBD)
+==============
+
+Internal
+---------
+* Factor `main.py` into several files using mixins.
+* Move CLI argument handling back to `main.py`.
+* Update Python versions used in CI.
+* Add CI on macOS.
+* Add limited CI on Windows.
+
+
+1.73.1 (2026/05/29)
+==============
+
+Bug Fixes
+---------
+* Update `sqlglot` to v30.8.0 to fix `build_formatted_string` error.
+
+
+1.73.0 (2026/05/27)
+==============
+
+Features
+---------
+* Update `cli_helpers` to v2.15.0 for `mysql_heavy` table format.
+* Add `sqlglot` and `pygments` to `--checkup` output.
+
+
+Bug Fixes
+---------
+* Respect `history_file` setting in the `[main]` section of `~/.myclirc`.
+* Adapt test suite to pygments v2.20.0.
+
+
+Documentation
+---------
+* Add support for other MySQL wire-compatible databases to `README.md`.
+
+
+Internal
+---------
+* Factor `app_state.py`, `cli_args.py`, and `output.py` out of `main.py`.
+
+
+1.72.1 (2026/05/11)
+==============
+
+Bug Fixes
+---------
+* Update `sqlglot` to v30.7.0 to fix has_bit_strings error.
+
+
+1.72.0 (2026/05/08)
+==============
+
+Features
+---------
+* Allow styling prompts with HTML-like tags.
+
+
+Bug Fixes
+---------
+* Gracefully fail on background completion-refresh connection issues.
+
+
+Documentation
+---------
+* Document the `\g` special command to send a query.
+
+
+Internal
+---------
+* Independent case-sensitivity for special-command aliases.
+
+
+1.71.0 (2026/05/01)
+==============
+
+Features
+---------
+* Add more output to the `status` command.
+* Respond to `help <term>` on builtin special commands.
+
+
+Documentation
+---------
+* Give example for ANSI prompt colors in `~/.myclirc`.
+* Fix typos in `TIPS` file.
+* Lightly reorganize `AUTHORS` file.
+
+
+Internal
+---------
+* Remove unused fixture data.
+* More test coverage for completion prefetch.
+* More test coverage for `--resume`.
+* Upgrade `cli_helpers` dependency to v2.14.0.
+* Require `prompt_toolkit>=3.0.41`.
+
+
+1.70.0 (2026/04/24)
+==============
+
+Features
+---------
+* Add option to prefetch completion metadata for some or all schemas.
+* Save fetched completion metadata when switching schemas.
+
+
+1.69.0 (2026/04/20)
+==============
+
+Features
+---------
+* Remove undocumented `%mycli` Jupyter magic.
+* Add `--quiet` option, and let `--verbose` be given multiple times.
+* Add `--resume` to replay `--checkpoint` files with `--batch`.
+
+
+Bug Fixes
+---------
+* Make LLM timings use the same format as other timings.
+
+
+Internal
+---------
+* Commentary and organization in default/package myclirc file.
+
+
+1.68.1 (2026/04/16)
+==============
+
+Bug Fixes
+---------
+* Upgrade `sqlglot` to v30.4.3, which may fix a build problem.
+
+
+1.68.0 (2026/04/13)
+==============
+
+Features
+---------
+* Continue to expand TIPS.
+* Make `--progress` and `--checkpoint` strictly by statement.
+* Allow more characters in passwords read from a file.
+* Show sponsors and contributors separately in startup messages.
+* Add support for expired password (sandbox) mode (#440).
+* Make balanced-bracket highlight colors configurable.
+* Don't persist password-change statements to history file.
+
+
+Bug Fixes
+---------
+* Fix issue stripping multi-character end-of-statement delimiters.
+* More conservative content truncation when sending to LLM APIs.
+* More careful removal of redundant fuzzy completion suggestions.
+* Fix a corner case when listing an empty list of favorite queries.
+* Better completions refresh on changing databases or ALTERs.
+* Make the return value of `FavoriteQueries.list()` a copy.
+* Make multi-line detection and special cases more robust.
+* Run empty `--execute` arguments instead of ignoring the flag.
+* Exit with error when the `--batch` argument is an empty string.
+* Avoid logging SSH passwords.
+
+
+Internal
+---------
+* Add an `AGENTS.md`.
+* Refactor `find_matches()` into smaller logical units.
+* Greatly increase test coverage.
+* Remove some unused code.
+* Better label Codex PR reviews.
+* Improve gitignored files.
+* Continue improve naming for `prompt_toolkit` utilities.
+* Run pytest tests in arbitrary order.
+* Type annotation improvements for `parse_pygments_style()`.
+* Upgrade `llm` dependency and set a minimum `pydantic_core` version.
+* Refactor suggestion logic into declarative rules.
+* Factor the `--batch` execution modes out of `main.py`.
+* Move `--checkup` logic to the new `main_modes` with `--batch`.
+* Move `--execute` logic to the new `main_modes` with `--batch`.
+* Move `--list-dsn` logic to the new `main_modes` with `--batch`.
+* Move `--list-ssh-config` logic to the new `main_modes` with `--batch`.
+* Move REPL logic to the new `main_modes`, and refactor the REPL.
+* Sort coverage report in tox suite.
+* Skip more tests when a database connection is not present.
+* Move SQL utilities to a new `sql_utils.py`.
+* Move CLI utilities to a new `cli_utils.py`.
+* Move keybinding utilities to a new `key_binding_utils.py`.
+* Move interactive utilities to `interactive_utils.py`.
+* Move special commands out of `main.py`.
+* Modernize orthography of prompt_toolkit filters.
+* Pin all GitHub Actions to hashes.
+* Remove unused method `get_completions()`.
+
+
+1.67.1 (2026/03/28)
+==============
+
+Features
+---------
+* Respond to `-h` alone with the helpdoc.
+* Allow `--hostname` as an alias for `--host`.
+* Suggest tables with foreign key relationships for JOIN and ON (#975).
+* Deprecate `$DSN` environment variable in favor of `$MYSQL_DSN`.
+* Add a `--progress` progress-bar option with `--batch`.
+
+
+Bug Fixes
+---------
+* Correct how password help is rendered in the helpdoc.
+* Respect `--no-show-warnings`, overriding settings in `~/.myclirc`.
+
+
+Internal
+---------
+* Collect CLI arguments into a dataclass.
+* Clean up generated files after test runs.
+* Migrate toplevel tool configurations to `pyproject.toml`.
+* Migrate other toplevel files to subdirectories.
+* Gather `pytest` files into a subdirectory, separated from `behave` tests.
+* Refactor: better naming for `prompt_toolkit` utilities.
+
+
+1.66.0 (2026/03/21)
+==============
+
+Features
+---------
+* Add a `--batch` option as an alternative to STDIN.
+* Deprecate `$MYSQL_UNIX_PORT` environment variable in favor of `$MYSQL_UNIX_SOCKET`.
+* Support `--username` and `$MYSQL_USER` to set username.
+
+
+Bug Fixes
+---------
+* Revert suppression of warnings when `sqlglotrs` is installed (fixed upstream).
+* Update `cli_helpers` to v2.12.0, fixing a `preserve_whitespace` bug with `tabulate`.
+
+
+Internal
+--------
+* Harden `codex-review` workflow against script injection from untrusted PR metadata.
+* Handle Click exceptions by hand.
+* Connect toolbar tests to the test database.
+
+
 1.65.1 (2026/03/18)
 ==============
 

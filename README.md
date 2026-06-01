@@ -7,8 +7,10 @@ A command line client for MySQL that can do auto-completion and syntax highlight
 Homepage: [https://mycli.net](https://mycli.net)
 Documentation: [https://mycli.net/docs](https://mycli.net/docs)
 
-![Completion](screenshots/tables.png)
-![CompletionGif](screenshots/main.gif)
+![Completion](doc/screenshots/tables.png)
+![CompletionGif](doc/screenshots/main.gif)
+
+Mycli is compatible with MySQL, MariaDB, Percona, and TiDB.
 
 Postgres Equivalent: [https://pgcli.com](https://pgcli.com)
 

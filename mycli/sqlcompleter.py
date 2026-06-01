@@ -13,12 +13,13 @@ import rapidfuzz
 
 from mycli.packages.completion_engine import is_inside_quotes, suggest_type
 from mycli.packages.filepaths import complete_path, parse_path, suggest_path
-from mycli.packages.parseutils import extract_columns_from_select, last_word
 from mycli.packages.special import llm
 from mycli.packages.special.favoritequeries import FavoriteQueries
 from mycli.packages.special.main import COMMANDS as SPECIAL_COMMANDS
+from mycli.packages.sql_utils import extract_columns_from_select, extract_tables, last_word
 
 _logger = logging.getLogger(__name__)
+_CASE_CHANGE_PAT = re.compile('(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 
 
 class Fuzziness(IntEnum):
@@ -1052,6 +1053,51 @@ class SQLCompleter(Completer):
             table_meta = metadata[self.dbname].setdefault(relname_escaped, {})
             table_meta[column_escaped] = values
 
+    def extend_foreign_keys(self, fk_data: Iterable[tuple[str, str, str, str]]) -> None:
+        """Extend FK metadata.
+
+        :param fk_data: iterable of (table_name, column_name, referenced_table_name, referenced_column_name)
+        """
+        metadata = self.dbmetadata["foreign_keys"]
+        schema_meta = metadata.setdefault(self.dbname, {})
+        schema_meta.setdefault("tables", {})
+        schema_meta.setdefault("relations", [])
+        for table, col, ref_table, ref_col in fk_data:
+            table = self.escape_name(table)
+            col = self.escape_name(col)
+            ref_table = self.escape_name(ref_table)
+            ref_col = self.escape_name(ref_col)
+            schema_meta["tables"].setdefault(table, set()).add(ref_table)
+            schema_meta["tables"].setdefault(ref_table, set()).add(table)
+            schema_meta["relations"].append((table, col, ref_table, ref_col))
+
+    def _fk_join_conditions(self, tables: list[tuple[str | None, str, str]]) -> list[str]:
+        """Return FK-based join condition strings for the tables currently in the query.
+
+        For each FK relation where both the FK table and the referenced table appear in
+        *tables*, yields a string like ``alias1.col = alias2.ref_col`` (using the alias
+        when one exists, otherwise the table name).
+        """
+        schema_meta = self.dbmetadata["foreign_keys"].get(self.dbname, {})
+        relations = schema_meta.get("relations", [])
+
+        # Map escaped table name -> alias (or table name when no alias).
+        # Skip tables from a different schema; we only have FK metadata for the current db.
+        alias_map: dict[str, str] = {}
+        for tbl_schema, tbl, alias in tables:
+            if tbl_schema and tbl_schema != self.dbname:
+                continue
+            escaped = self.escape_name(tbl)
+            alias_map[escaped] = alias or tbl
+
+        conditions: list[str] = []
+        for fk_table, fk_col, ref_table, ref_col in relations:
+            lhs = alias_map.get(fk_table)
+            rhs = alias_map.get(ref_table)
+            if lhs and rhs:
+                conditions.append(f"{lhs}.{fk_col} = {rhs}.{ref_col}")
+        return conditions
+
     def extend_functions(self, func_data: list[str] | Generator[tuple[str, str]], builtin: bool = False) -> None:
         # if 'builtin' is set this is extending the list of builtin functions
         if builtin:
@@ -1111,6 +1157,72 @@ class SQLCompleter(Completer):
     def set_dbname(self, dbname: str | None) -> None:
         self.dbname = dbname or ''
 
+    def load_schema_metadata(
+        self,
+        schema: str,
+        table_columns: dict[str, list[str]],
+        foreign_keys: dict[str, Any],
+        enum_values: dict[str, dict[str, list[str]]],
+        functions: dict[str, None],
+        procedures: dict[str, None],
+    ) -> None:
+        """Atomically replace the completion metadata for *schema*.
+
+        Each argument is pre-built by the caller in the same shape that
+        ``dbmetadata[kind][schema]`` uses internally.  Replacing the
+        per-schema dicts by assignment (rather than appending to the live
+        structures) keeps concurrent readers of ``get_completions`` safe.
+        """
+        if not schema:
+            return
+        self.dbmetadata["tables"][schema] = table_columns
+        self.dbmetadata["views"].setdefault(schema, {})
+        self.dbmetadata["functions"][schema] = functions
+        self.dbmetadata["procedures"][schema] = procedures
+        self.dbmetadata["enum_values"][schema] = enum_values
+        self.dbmetadata["foreign_keys"][schema] = foreign_keys
+        self._register_schema_completions(schema, table_columns, functions)
+
+    def copy_other_schemas_from(self, source: "SQLCompleter", exclude: str | None) -> None:
+        """Copy per-schema metadata from *source*, skipping *exclude*.
+
+        After a completion refresh swaps in a fresh completer that was
+        populated only with the current schema's data, this restores any
+        previously-loaded metadata for other schemas so the user can keep
+        using qualified completions (``OtherSchema.table``) without a
+        re-fetch.
+        """
+        kinds = ("tables", "views", "functions", "procedures", "enum_values", "foreign_keys")
+        for kind in kinds:
+            src_map = source.dbmetadata.get(kind, {})
+            dest_map = self.dbmetadata.setdefault(kind, {})
+            for schema_name, data in src_map.items():
+                if not schema_name or schema_name == exclude:
+                    continue
+                if schema_name in dest_map:
+                    continue
+                dest_map[schema_name] = data
+        for schema_name, table_columns in self.dbmetadata["tables"].items():
+            if schema_name == exclude:
+                continue
+            functions = self.dbmetadata.get("functions", {}).get(schema_name, {})
+            self._register_schema_completions(schema_name, table_columns, functions)
+
+    def _register_schema_completions(
+        self,
+        schema: str,
+        table_columns: dict[str, list[str]],
+        functions: dict[str, None] | dict[str, Any],
+    ) -> None:
+        self.all_completions.add(schema)
+        for table, cols in table_columns.items():
+            self.all_completions.add(table)
+            for col in cols:
+                if col != "*":
+                    self.all_completions.add(col)
+        for func_name in functions:
+            self.all_completions.add(func_name)
+
     def reset_completions(self) -> None:
         self.databases: list[str] = []
         self.users: list[str] = []
@@ -1124,11 +1236,138 @@ class SQLCompleter(Completer):
             "functions": {},
             "procedures": {},
             "enum_values": {},
+            "foreign_keys": {},
         }
         self.all_completions = set(self.keywords + self.functions)
 
-    @staticmethod
+    def maybe_quote_identifier(self, item: str) -> str:
+        if item.startswith('`'):
+            return item
+        if item == '*':
+            return item
+        return '`' + item + '`'
+
+    def quote_collection_if_needed(
+        self,
+        text: str,
+        collection: Collection[Any],
+        text_before_cursor: str,
+    ) -> Collection[Any]:
+        # checking text.startswith() first is an optimization; is_inside_quotes() covers more cases
+        if text.startswith('`') or is_inside_quotes(text_before_cursor, len(text_before_cursor)) == 'backtick':
+            return [self.maybe_quote_identifier(x) if isinstance(x, str) else x for x in collection]
+        return collection
+
+    def word_parts_match(
+        self,
+        text_parts: list[str],
+        item_parts: list[str],
+    ) -> bool:
+        occurrences = 0
+        for text_part in text_parts:
+            for item_part in item_parts:
+                if item_part.startswith(text_part):
+                    occurrences += 1
+                    break
+        return occurrences >= len(text_parts)
+
+    def find_fuzzy_match(
+        self,
+        item: str,
+        pattern: re.Pattern[str],
+        under_words_text: list[str],
+        case_words_text: list[str],
+    ) -> int | None:
+        if pattern.search(item.lower()):
+            return Fuzziness.REGEX
+
+        under_words_item = [x for x in item.lower().split('_') if x]
+        if self.word_parts_match(under_words_text, under_words_item):
+            return Fuzziness.UNDER_WORDS
+
+        case_words_item = re.split(_CASE_CHANGE_PAT, item)
+        if self.word_parts_match(case_words_text, case_words_item):
+            return Fuzziness.CAMEL_CASE
+
+        return None
+
+    def find_fuzzy_matches(
+        self,
+        last: str,
+        text: str,
+        collection: Collection[Any],
+    ) -> list[tuple[str, int]]:
+        completions: list[tuple[str, int]] = []
+        regex = '.{0,3}?'.join(map(re.escape, text))
+        pattern = re.compile(f'({regex})')
+        under_words_text = [x for x in text.split('_') if x]
+        case_words_text = re.split(_CASE_CHANGE_PAT, last)
+
+        for item in collection:
+            fuzziness = self.find_fuzzy_match(item, pattern, under_words_text, case_words_text)
+            if fuzziness is not None:
+                completions.append((item, fuzziness))
+
+        if len(text) >= 4:
+            rapidfuzz_matches = rapidfuzz.process.extract(
+                text,
+                collection,
+                scorer=rapidfuzz.fuzz.WRatio,
+                # todo: maybe make our own processor which only does case-folding
+                # because underscores are valuable info
+                processor=rapidfuzz.utils.default_process,
+                limit=20,
+                score_cutoff=75,
+            )
+            existing = {c[0] for c in completions}
+            for item, _score, _type in rapidfuzz_matches:
+                if len(item) < len(text) / 1.5 or item in existing:
+                    continue
+                completions.append((item, Fuzziness.RAPIDFUZZ))
+
+        return completions
+
+    def find_perfect_matches(
+        self,
+        text: str,
+        collection: Collection[Any],
+        start_only: bool,
+    ) -> list[tuple[str, int]]:
+        completions: list[tuple[str, int]] = []
+        match_end_limit = len(text) if start_only else None
+        for item in collection:
+            match_point = item.lower().find(text, 0, match_end_limit)
+            if match_point >= 0:
+                completions.append((item, Fuzziness.PERFECT))
+        return completions
+
+    def resolve_casing(
+        self,
+        casing: str | None,
+        last: str,
+    ) -> str | None:
+        if casing != 'auto':
+            return casing
+        return 'lower' if last and (last[0].islower() or last[-1].islower()) else 'upper'
+
+    def apply_casing(
+        self,
+        completions: list[tuple[str, int]],
+        casing: str | None,
+    ) -> Generator[tuple[str, int], None, None]:
+        if casing is None:
+            return (completion for completion in completions)
+
+        def apply_case(tup: tuple[str, int]) -> tuple[str, int]:
+            kw, fuzziness = tup
+            if casing == 'upper':
+                return (kw.upper(), fuzziness)
+            return (kw.lower(), fuzziness)
+
+        return (apply_case(completion) for completion in completions)
+
     def find_matches(
+        self,
         orig_text: str,
         collection: Collection,
         start_only: bool = False,
@@ -1149,96 +1388,17 @@ class SQLCompleter(Completer):
         yields prompt_toolkit Completion instances for any matches found
         in the collection of available completions.
         """
-        last = last_word(orig_text, include="most_punctuations")
+        last = last_word(orig_text, include='most_punctuations')
         text = last.lower()
-        # unicode support not possible without adding the regex dependency
-        case_change_pat = re.compile("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-
-        completions: list[tuple[str, int]] = []
-
-        def maybe_quote_identifier(item: str) -> str:
-            if item.startswith('`'):
-                return item
-            if item == '*':
-                return item
-            return '`' + item + '`'
-
-        # checking text.startswith() first is an optimization; is_inside_quotes() covers more cases
-        if text.startswith('`') or is_inside_quotes(text_before_cursor, len(text_before_cursor)) == 'backtick':
-            quoted_collection: Collection[Any] = [maybe_quote_identifier(x) if isinstance(x, str) else x for x in collection]
-        else:
-            quoted_collection = collection
+        quoted_collection = self.quote_collection_if_needed(text, collection, text_before_cursor)
 
         if fuzzy:
-            regex = ".{0,3}?".join(map(re.escape, text))
-            pat = re.compile(f'({regex})')
-            under_words_text = [x for x in text.split('_') if x]
-            case_words_text = re.split(case_change_pat, last)
-
-            for item in quoted_collection:
-                r = pat.search(item.lower())
-                if r:
-                    completions.append((item, Fuzziness.REGEX))
-                    continue
-
-                under_words_item = [x for x in item.lower().split('_') if x]
-                occurrences = 0
-                for elt_word in under_words_text:
-                    for elt_item in under_words_item:
-                        if elt_item.startswith(elt_word):
-                            occurrences += 1
-                            break
-                if occurrences >= len(under_words_text):
-                    completions.append((item, Fuzziness.UNDER_WORDS))
-                    continue
-
-                case_words_item = re.split(case_change_pat, item)
-                occurrences = 0
-                for elt_word in case_words_text:
-                    for elt_item in case_words_item:
-                        if elt_item.startswith(elt_word):
-                            occurrences += 1
-                            break
-                if occurrences >= len(case_words_text):
-                    completions.append((item, Fuzziness.CAMEL_CASE))
-                    continue
-
-            if len(text) >= 4:
-                rapidfuzz_matches = rapidfuzz.process.extract(
-                    text,
-                    quoted_collection,
-                    scorer=rapidfuzz.fuzz.WRatio,
-                    # todo: maybe make our own processor which only does case-folding
-                    # because underscores are valuable info
-                    processor=rapidfuzz.utils.default_process,
-                    limit=20,
-                    score_cutoff=75,
-                )
-                for elt in rapidfuzz_matches:
-                    item, _score, _type = elt
-                    if len(item) < len(text) / 1.5:
-                        continue
-                    if item in completions:
-                        continue
-                    completions.append((item, Fuzziness.RAPIDFUZZ))
-
+            completions = self.find_fuzzy_matches(last, text, quoted_collection)
         else:
-            match_end_limit = len(text) if start_only else None
-            for item in quoted_collection:
-                match_point = item.lower().find(text, 0, match_end_limit)
-                if match_point >= 0:
-                    completions.append((item, Fuzziness.PERFECT))
+            completions = self.find_perfect_matches(text, quoted_collection, start_only)
 
-        if casing == "auto":
-            casing = "lower" if last and (last[0].islower() or last[-1].islower()) else "upper"
-
-        def apply_case(tup: tuple[str, int]) -> tuple[str, int]:
-            kw, fuzziness = tup
-            if casing == "upper":
-                return (kw.upper(), fuzziness)
-            return (kw.lower(), fuzziness)
-
-        return (x if casing is None else apply_case(x) for x in completions)
+        casing = self.resolve_casing(casing, last)
+        return self.apply_casing(completions, casing)
 
     def get_completions(
         self,
@@ -1366,12 +1526,39 @@ class SQLCompleter(Completer):
                     tables = self.populate_schema_objects(suggestion["schema"], "tables", columns)
                 else:
                     tables = self.populate_schema_objects(suggestion["schema"], "tables")
-                tables_m = self.find_matches(
-                    word_before_cursor,
-                    tables,
-                    text_before_cursor=document.text_before_cursor,
-                )
-                completions.extend([(*x, rank) for x in tables_m])
+
+                if suggestion.get("join"):
+                    # For JOINs, suggest FK-related tables first (lower rank = higher priority)
+                    current_tables = extract_tables(document.text)
+                    fk_map = self.dbmetadata["foreign_keys"].get(self.dbname, {}).get("tables", {})
+                    fk_related: set[str] = set()
+                    for tbl_schema, tbl, _alias in current_tables:
+                        # Skip cross-schema tables; FK metadata is only for the current db
+                        if tbl_schema and tbl_schema != self.dbname:
+                            continue
+                        escaped = self.escape_name(tbl)
+                        fk_related.update(fk_map.get(escaped, set()))
+                    fk_tables = [t for t in tables if t in fk_related]
+                    other_tables = [t for t in tables if t not in fk_related]
+                    fk_tables_m = self.find_matches(
+                        word_before_cursor,
+                        fk_tables,
+                        text_before_cursor=document.text_before_cursor,
+                    )
+                    other_tables_m = self.find_matches(
+                        word_before_cursor,
+                        other_tables,
+                        text_before_cursor=document.text_before_cursor,
+                    )
+                    completions.extend([(*x, rank) for x in fk_tables_m])
+                    completions.extend([(*x, rank + 1) for x in other_tables_m])
+                else:
+                    tables_m = self.find_matches(
+                        word_before_cursor,
+                        tables,
+                        text_before_cursor=document.text_before_cursor,
+                    )
+                    completions.extend([(*x, rank) for x in tables_m])
 
             elif suggestion["type"] == "view":
                 views = self.populate_schema_objects(suggestion["schema"], "views")
@@ -1381,6 +1568,15 @@ class SQLCompleter(Completer):
                     text_before_cursor=document.text_before_cursor,
                 )
                 completions.extend([(*x, rank) for x in views_m])
+
+            elif suggestion["type"] == "fk_join":
+                fk_conditions = self._fk_join_conditions(suggestion["tables"])
+                fk_conditions_m = self.find_matches(
+                    word_before_cursor,
+                    fk_conditions,
+                    text_before_cursor=document.text_before_cursor,
+                )
+                completions.extend([(*x, rank) for x in fk_conditions_m])
 
             elif suggestion["type"] == "alias":
                 aliases = suggestion["aliases"]

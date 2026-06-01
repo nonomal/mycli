@@ -32,7 +32,7 @@ the --auto-vertical-output flag lets you automatically switch to vertical output
 
 the --show-warnings flag turns on warnings from the MySQL server!
 
-the --no-warn flag turns off warnings befor running a destructive query!
+the --no-warn flag turns off warnings before running a destructive query!
 
 the --init-command option lets you execute initialization SQL before a session!
 
@@ -53,8 +53,6 @@ copy a query to the clipboard using \clip at the end of the query!
 edit a query in an external editor using <query>\edit!
 
 edit a query in an external editor using \edit <filename>!
-
-set "export VISUAL='code --wait'" in your shell to `\edit` queries using VS Code!
 
 \f lists favorite queries; \f <name> executes a favorite!
 
@@ -111,6 +109,28 @@ the "watch" command executes a query every N seconds!
 use \bug to file a bug on GitHub!
 
 ###
+### environment variables
+###
+
+run "export VISUAL='code --wait'" in your shell to \edit queries using VS Code!
+
+set environment variable MYCLI_LLM_OFF to skip loading LLM libraries!
+
+set environment variable MYCLI_HISTFILE to relocate the history file!
+
+set environment variable MYSQL_PWD to set a default password!
+
+set environment variable MYSQL_HOST to set a default host!
+
+set environment variable MYSQL_TCP_PORT to set a default port!
+
+set environment variable MYSQL_USER to set a default username!
+
+set environment variable MYSQL_UNIX_SOCKET to set a default socket!
+
+set environment variable MYSQL_DSN to set a default DSN!
+
+###
 ### general
 ###
 
@@ -157,6 +177,30 @@ use keystroke control-g to cancel completion popups!
 use keystroke right-arrow to accept a full-line suggestion from your history!
 
 cancel history search using keystrokes Escape or control-g!
+
+uppercase a word using keystroke alt-u!
+
+lowercase a word using keystroke alt-l!
+
+collapse multiple spaces using keystroke alt-\!
+
+undo using keystroke control-_ or control-x + control-u!
+
+ditto the last argument of the previous command with keystroke alt-.!
+
+ditto the last argument of the previous command with keystroke alt-_!
+
+turn the current query into a comment with keystroke alt-#!
+
+jump forward to a character with keystroke control-]!
+
+jump backward to a character with keystroke alt-control-]!
+
+insert all completions with keystroke alt-*!
+
+in multi-line mode, keystroke alt-Enter dispatches the query!
+
+keystroke control-q + control-j inserts a newline without dispatching the query!
 
 ###
 ### myclirc options

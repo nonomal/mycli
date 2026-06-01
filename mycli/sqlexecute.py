@@ -14,6 +14,7 @@ from pymysql.constants import FIELD_TYPE
 from pymysql.converters import conversions, convert_date, convert_datetime, convert_time, decoders
 from pymysql.cursors import Cursor
 
+from mycli.constants import ER_MUST_CHANGE_PASSWORD
 from mycli.packages.special import iocommands
 from mycli.packages.special.main import CommandNotFound, execute
 from mycli.packages.sqlresult import SQLResult
@@ -114,6 +115,10 @@ class SQLExecute:
     enum_values_query = """select TABLE_NAME, COLUMN_NAME, COLUMN_TYPE from information_schema.columns
                                     where table_schema = %s and data_type = 'enum'
                                     order by table_name,ordinal_position"""
+
+    foreign_keys_query = """SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+                                    FROM information_schema.KEY_COLUMN_USAGE
+                                    WHERE TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME IS NOT NULL"""
 
     now_query = """SELECT NOW()"""
 
@@ -241,7 +246,7 @@ class SQLExecute:
             "\tssh_user: %r"
             "\tssh_host: %r"
             "\tssh_port: %r"
-            "\tssh_password: %r"
+            "\tssh_password: ***"
             "\tssh_key_filename: %r"
             "\tinit_command: %r"
             "\tunbuffered: %r",
@@ -256,7 +261,6 @@ class SQLExecute:
             ssh_user,
             ssh_host,
             ssh_port,
-            ssh_password,
             ssh_key_filename,
             init_command,
             unbuffered,
@@ -277,32 +281,50 @@ class SQLExecute:
         client_flag = pymysql.constants.CLIENT.INTERACTIVE
         if init_command and len(list(iocommands.split_queries(init_command))) > 1:
             client_flag |= pymysql.constants.CLIENT.MULTI_STATEMENTS
+        client_flag |= pymysql.constants.CLIENT.HANDLE_EXPIRED_PASSWORDS
 
         ssl_context = None
         if ssl:
             ssl_context = self._create_ssl_ctx(ssl)
 
-        conn = pymysql.connect(
-            database=db,
-            user=user,
-            password=password or '',
-            host=host,
-            port=port or 0,
-            unix_socket=socket,
-            use_unicode=True,
-            charset=character_set or '',
-            autocommit=True,
-            client_flag=client_flag,
-            local_infile=local_infile or False,
-            conv=conv,
-            ssl=ssl_context,  # type: ignore[arg-type]
-            program_name="mycli",
-            defer_connect=defer_connect,
-            init_command=init_command or None,
-            cursorclass=pymysql.cursors.SSCursor if unbuffered else pymysql.cursors.Cursor,
-        )  # type: ignore[misc]
+        connect_kwargs: dict[str, Any] = {
+            "database": db,
+            "user": user,
+            "password": password or '',
+            "host": host,
+            "port": port or 0,
+            "unix_socket": socket,
+            "use_unicode": True,
+            "charset": character_set or '',
+            "autocommit": True,
+            "client_flag": client_flag,
+            "local_infile": local_infile or False,
+            "conv": conv,
+            "ssl": ssl_context,  # type: ignore[arg-type]
+            "program_name": "mycli",
+            "defer_connect": defer_connect,
+            "init_command": init_command or None,
+            "cursorclass": pymysql.cursors.SSCursor if unbuffered else pymysql.cursors.Cursor,
+        }
 
-        if ssh_host:
+        self.sandbox_mode = False
+        try:
+            conn = pymysql.connect(**connect_kwargs)  # type: ignore[misc]
+        except pymysql.OperationalError as e:
+            if e.args[0] == ER_MUST_CHANGE_PASSWORD:
+                # Post-handshake queries (SET NAMES, SET AUTOCOMMIT, init_command)
+                # fail with ER_MUST_CHANGE_PASSWORD in sandbox mode.
+                # Reconnect with only the raw handshake.
+                connect_kwargs['defer_connect'] = True
+                connect_kwargs['autocommit'] = None
+                connect_kwargs['init_command'] = None
+                conn = pymysql.connect(**connect_kwargs)  # type: ignore[misc]
+                self._connect_sandbox(conn)
+                self.sandbox_mode = True
+            else:
+                raise
+
+        if ssh_host and not self.sandbox_mode:
             ##### paramiko.Channel is a bad socket implementation overall if you want SSL through an SSH tunnel
             #####
             # instead let's open a tunnel and rewrite host:port to local bind
@@ -340,9 +362,10 @@ class SQLExecute:
         self.ssl = ssl
         self.init_command = init_command
         self.unbuffered = unbuffered
-        # retrieve connection id
-        self.reset_connection_id()
-        self.server_info = ServerInfo.from_version_string(conn.server_version)  # type: ignore[attr-defined]
+        # retrieve connection id (skip in sandbox mode as queries will fail)
+        if not self.sandbox_mode:
+            self.reset_connection_id()
+            self.server_info = ServerInfo.from_version_string(conn.server_version)  # type: ignore[attr-defined]
 
     def run(self, statement: str) -> Generator[SQLResult, None, None]:
         """Execute the sql in the database and return the results."""
@@ -421,24 +444,38 @@ class SQLExecute:
             cur.execute(self.tables_query)
             yield from cur
 
-    def table_columns(self) -> Generator[tuple[str, str], None, None]:
-        """Yields (table name, column name) pairs"""
+    def table_columns(self, schema: str | None = None) -> Generator[tuple[str, str], None, None]:
+        """Yields (table name, column name) pairs for *schema* (default: current database)."""
+        target = schema if schema is not None else self.dbname
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
-            _logger.debug("Columns Query. sql: %r", self.table_columns_query)
-            cur.execute(self.table_columns_query, (self.dbname,))
+            _logger.debug("Columns Query. sql: %r schema: %r", self.table_columns_query, target)
+            cur.execute(self.table_columns_query, (target,))
             yield from cur
 
-    def enum_values(self) -> Generator[tuple[str, str, list[str]], None, None]:
-        """Yields (table name, column name, enum values) tuples"""
+    def enum_values(self, schema: str | None = None) -> Generator[tuple[str, str, list[str]], None, None]:
+        """Yields (table name, column name, enum values) tuples for *schema*."""
+        target = schema if schema is not None else self.dbname
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
-            _logger.debug("Enum Values Query. sql: %r", self.enum_values_query)
-            cur.execute(self.enum_values_query, (self.dbname,))
+            _logger.debug("Enum Values Query. sql: %r schema: %r", self.enum_values_query, target)
+            cur.execute(self.enum_values_query, (target,))
             for table_name, column_name, column_type in cur:
                 values = self._parse_enum_values(column_type)
                 if values:
                     yield (table_name, column_name, values)
+
+    def foreign_keys(self, schema: str | None = None) -> Generator[tuple[str, str, str, str], None, None]:
+        """Yields (table_name, column_name, referenced_table_name, referenced_column_name) tuples for *schema*."""
+        target = schema if schema is not None else self.dbname
+        assert isinstance(self.conn, Connection)
+        with self.conn.cursor() as cur:
+            _logger.debug("Foreign Keys Query. sql: %r schema: %r", self.foreign_keys_query, target)
+            try:
+                cur.execute(self.foreign_keys_query, (target,))
+                yield from cur
+            except Exception as e:
+                _logger.error('No foreign key completions due to %r', e)
 
     def databases(self) -> list[str]:
         assert isinstance(self.conn, Connection)
@@ -447,23 +484,25 @@ class SQLExecute:
             cur.execute(self.databases_query)
             return [x[0] for x in cur.fetchall()]
 
-    def functions(self) -> Generator[tuple[str, str], None, None]:
-        """Yields tuples of (schema_name, function_name)"""
+    def functions(self, schema: str | None = None) -> Generator[tuple[str, str], None, None]:
+        """Yields tuples of (schema_name, function_name) for *schema*."""
 
+        target = schema if schema is not None else self.dbname
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
-            _logger.debug("Functions Query. sql: %r", self.functions_query)
-            cur.execute(self.functions_query, (self.dbname,))
+            _logger.debug("Functions Query. sql: %r schema: %r", self.functions_query, target)
+            cur.execute(self.functions_query, (target,))
             yield from cur
 
-    def procedures(self) -> Generator[tuple, None, None]:
-        """Yields tuples of (procedure_name, )"""
+    def procedures(self, schema: str | None = None) -> Generator[tuple, None, None]:
+        """Yields tuples of (procedure_name, ) for *schema*."""
 
+        target = schema if schema is not None else self.dbname
         assert isinstance(self.conn, Connection)
         with self.conn.cursor() as cur:
-            _logger.debug("Procedures Query. sql: %r", self.procedures_query)
+            _logger.debug("Procedures Query. sql: %r schema: %r", self.procedures_query, target)
             try:
-                cur.execute(self.procedures_query, (self.dbname,))
+                cur.execute(self.procedures_query, (target,))
             except pymysql.DatabaseError as e:
                 _logger.error('No procedure completions due to %r', e)
                 yield ()
@@ -561,6 +600,24 @@ class SQLExecute:
         assert isinstance(self.conn, Connection)
         self.conn.select_db(db)
         self.dbname = db
+
+    @staticmethod
+    def _connect_sandbox(conn: Connection) -> None:
+        """Connect in sandbox mode, performing only the handshake.
+
+        pymysql's normal connect() runs post-handshake queries (SET NAMES,
+        SET AUTOCOMMIT, init_command) that all fail with ER_MUST_CHANGE_PASSWORD
+        in sandbox mode.  This method performs the raw socket connection and
+        authentication handshake only.
+        """
+        # Reuse pymysql internals for the handshake + auth, but
+        # temporarily stub out set_character_set so it becomes a no-op.
+        original_set_charset = conn.set_character_set
+        conn.set_character_set = lambda *_args, **_kwargs: None  # type: ignore[assignment]
+        try:
+            conn.connect()
+        finally:
+            conn.set_character_set = original_set_charset  # type: ignore[assignment]
 
     def _create_ssl_ctx(self, sslp: dict) -> ssl.SSLContext:
         ca = sslp.get("ca")

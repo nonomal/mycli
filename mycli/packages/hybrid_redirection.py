@@ -1,16 +1,7 @@
 import functools
 import logging
-import warnings
 
-with warnings.catch_warnings():
-    # for sqlglot v29.0.1
-    warnings.filterwarnings(
-        'ignore',
-        message=r'sqlglot\[rs\] is deprecated',
-        category=UserWarning,
-        module='sqlglot',
-    )
-    import sqlglot
+import sqlglot
 
 from mycli.compat import WIN
 from mycli.packages.special.delimitercommand import DelimiterCommand
@@ -134,6 +125,7 @@ def invalid_shell_part(
     return False
 
 
+# todo there are still corner cases combining custom delimiters, caching, and redirection
 @functools.lru_cache(maxsize=1)
 def get_redirect_components(command: str) -> tuple[str | None, str | None, str | None, str | None]:
     """Get the parts of a hybrid shell-style redirect command."""

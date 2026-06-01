@@ -1,4 +1,4 @@
-from collections import namedtuple
+from dataclasses import dataclass
 from enum import Enum
 import logging
 import os
@@ -21,21 +21,9 @@ from pymysql.cursors import Cursor
 
 logger = logging.getLogger(__name__)
 
-COMMANDS = {}
-
-SpecialCommand = namedtuple(
-    "SpecialCommand",
-    [
-        "handler",
-        "command",
-        "usage",
-        "description",
-        "arg_type",
-        "hidden",
-        "case_sensitive",
-        "shortcut",
-    ],
-)
+COMMANDS: dict[str, 'SpecialCommand'] = {}
+CASE_SENSITIVE_COMMANDS: set[str] = set()
+CASE_INSENSITIVE_COMMANDS: set[str] = set()
 
 
 class ArgType(Enum):
@@ -44,35 +32,53 @@ class ArgType(Enum):
     RAW_QUERY = 2
 
 
+@dataclass(frozen=True)
+class SpecialCommandAlias:
+    command: str
+    case_sensitive: bool
+
+
+@dataclass(frozen=True)
+class SpecialCommand:
+    handler: Callable
+    command: str
+    usage: str
+    description: str
+    arg_type: ArgType
+    hidden: bool | None
+    case_sensitive: bool | None
+    aliases: list[SpecialCommandAlias] | None
+
+
 class CommandNotFound(Exception):
     pass
 
 
-class Verbosity(Enum):
+class CommandVerbosity(Enum):
     SUCCINCT = "succinct"
     NORMAL = "normal"
     VERBOSE = "verbose"
 
 
-def parse_special_command(sql: str) -> tuple[str, Verbosity, str]:
+def parse_special_command(sql: str) -> tuple[str, CommandVerbosity, str]:
     command, _, arg = sql.partition(" ")
-    verbosity = Verbosity.NORMAL
+    command_verbosity = CommandVerbosity.NORMAL
     if "+" in command:
-        verbosity = Verbosity.VERBOSE
+        command_verbosity = CommandVerbosity.VERBOSE
     elif "-" in command:
-        verbosity = Verbosity.SUCCINCT
+        command_verbosity = CommandVerbosity.SUCCINCT
     command = command.strip().strip("+-")
-    return (command, verbosity, arg.strip())
+    return (command, command_verbosity, arg.strip())
 
 
 def special_command(
     command: str,
-    usage: str | None,
+    usage: str,
     description: str,
     arg_type: ArgType = ArgType.PARSED_QUERY,
     hidden: bool = False,
     case_sensitive: bool = False,
-    aliases: list[str] | None = None,
+    aliases: list[SpecialCommandAlias] | None = None,
 ) -> Callable:
     def wrapper(wrapped):
         register_special_command(
@@ -93,12 +99,12 @@ def special_command(
 def register_special_command(
     handler: Callable,
     command: str,
-    usage: str | None,
+    usage: str,
     description: str,
     arg_type: ArgType = ArgType.PARSED_QUERY,
     hidden: bool = False,
     case_sensitive: bool = False,
-    aliases: list[str] | None = None,
+    aliases: list[SpecialCommandAlias] | None = None,
 ) -> None:
     cmd = command.lower() if not case_sensitive else command
     COMMANDS[cmd] = SpecialCommand(
@@ -109,20 +115,28 @@ def register_special_command(
         arg_type=arg_type,
         hidden=hidden,
         case_sensitive=case_sensitive,
-        shortcut=aliases[0] if aliases else None,
+        aliases=aliases,
     )
+    if case_sensitive:
+        CASE_SENSITIVE_COMMANDS.add(command)
+    else:
+        CASE_INSENSITIVE_COMMANDS.add(command.lower())
     aliases = [] if aliases is None else aliases
     for alias in aliases:
-        cmd = alias.lower() if not case_sensitive else alias
+        cmd = alias.command.lower() if not alias.case_sensitive else alias.command
+        if alias.case_sensitive:
+            CASE_SENSITIVE_COMMANDS.add(alias.command)
+        else:
+            CASE_INSENSITIVE_COMMANDS.add(alias.command.lower())
         COMMANDS[cmd] = SpecialCommand(
             handler,
             command,
             usage,
             description,
             arg_type=arg_type,
-            case_sensitive=case_sensitive,
+            case_sensitive=alias.case_sensitive,
             hidden=True,
-            shortcut=None,
+            aliases=None,
         )
 
 
@@ -130,9 +144,9 @@ def execute(cur: Cursor, sql: str) -> list[SQLResult]:
     """Execute a special command and return the results. If the special command
     is not supported a CommandNotFound will be raised.
     """
-    command, verbosity, arg = parse_special_command(sql)
+    command, command_verbosity, arg = parse_special_command(sql)
 
-    if (command not in COMMANDS) and (command.lower() not in COMMANDS):
+    if (command not in CASE_SENSITIVE_COMMANDS) and (command.lower() not in CASE_INSENSITIVE_COMMANDS):
         raise CommandNotFound(f'Command not found: {command}')
 
     try:
@@ -144,13 +158,13 @@ def execute(cur: Cursor, sql: str) -> list[SQLResult]:
 
     # "help <SQL KEYWORD> is a special case. We want built-in help, not
     # mycli help here.
-    if command == "help" and arg:
+    if command.lower() == "help" and arg:
         return show_keyword_help(cur=cur, arg=arg)
 
     if special_cmd.arg_type == ArgType.NO_QUERY:
         return special_cmd.handler()
     elif special_cmd.arg_type == ArgType.PARSED_QUERY:
-        return special_cmd.handler(cur=cur, arg=arg, verbose=(verbosity == Verbosity.VERBOSE))
+        return special_cmd.handler(cur=cur, arg=arg, command_verbosity=(command_verbosity == CommandVerbosity.VERBOSE))
     elif special_cmd.arg_type == ArgType.RAW_QUERY:
         return special_cmd.handler(cur=cur, query=sql)
 
@@ -158,26 +172,42 @@ def execute(cur: Cursor, sql: str) -> list[SQLResult]:
 
 
 @special_command(
-    "help", "help [term]", "Show this help, or search for a term on the server.", arg_type=ArgType.NO_QUERY, aliases=["\\?", "?"]
+    "help",
+    "help [term]",
+    "Show this table, or search for help on a term.",
+    arg_type=ArgType.NO_QUERY,
+    aliases=[SpecialCommandAlias("\\?", case_sensitive=False), SpecialCommandAlias("?", case_sensitive=False)],
 )
 def show_help(*_args) -> list[SQLResult]:
     header = ["Command", "Shortcut", "Usage", "Description"]
     result = []
 
-    for _, value in sorted(COMMANDS.items()):
-        if not value.hidden:
-            result.append((value.command, value.shortcut, value.usage, value.description))
+    for _, value in sorted(COMMANDS.items(), key=lambda x: str.casefold(x[0])):
+        if value.hidden:
+            continue
+        if value.aliases:
+            shortcut = value.aliases[0].command
+        else:
+            shortcut = None
+        result.append((value.command, shortcut, value.usage, value.description))
     return [SQLResult(header=header, rows=result, postamble=f'Docs index — {DOCS_URL}')]
 
 
-def show_keyword_help(cur: Cursor, arg: str) -> list[SQLResult]:
+def _show_special_help(keyword: str) -> list[SQLResult]:
+    header = ['name', 'description', 'example']
+    command = COMMANDS[keyword]
+    description = '\n'.join([command.usage or '', command.description])
+    rows = [(keyword, description, '')]
+    return [SQLResult(header=header, rows=rows)]
+
+
+def _show_mysql_help(cur: Cursor, keyword: str) -> list[SQLResult]:
     """
     Call the built-in "show <keyword>", to display help for an SQL keyword.
     :param cur: cursor
     :param arg: string
     :return: list
     """
-    keyword = arg.strip().strip('"\'')
     query = 'help %s'
     logger.debug(query)
     cur.execute(query, keyword)
@@ -193,14 +223,37 @@ def show_keyword_help(cur: Cursor, arg: str) -> list[SQLResult]:
         return [SQLResult(status=f'No help found for "{keyword}".')]
 
 
+def show_keyword_help(cur: Cursor, arg: str) -> list[SQLResult]:
+    keyword = arg.strip().strip('"').strip("'").rstrip('+-')
+
+    if keyword in CASE_SENSITIVE_COMMANDS:
+        return _show_special_help(keyword)
+    elif keyword.lower() in CASE_INSENSITIVE_COMMANDS:
+        return _show_special_help(keyword.lower())
+
+    return _show_mysql_help(cur, keyword)
+
+
 @special_command('\\bug', '\\bug', 'File a bug on GitHub.', arg_type=ArgType.NO_QUERY)
 def file_bug(*_args) -> list[SQLResult]:
     webbrowser.open_new_tab(ISSUES_URL)
     return [SQLResult(status=f'{ISSUES_URL} — press "New Issue"')]
 
 
-@special_command("exit", "exit", "Exit.", arg_type=ArgType.NO_QUERY, aliases=["\\q"])
-@special_command("quit", "quit", "Quit.", arg_type=ArgType.NO_QUERY, aliases=["\\q"])
+@special_command(
+    "exit",
+    "exit",
+    "Exit.",
+    arg_type=ArgType.NO_QUERY,
+    aliases=[SpecialCommandAlias("\\q", case_sensitive=False)],
+)
+@special_command(
+    "quit",
+    "quit",
+    "Quit.",
+    arg_type=ArgType.NO_QUERY,
+    aliases=[SpecialCommandAlias("\\q", case_sensitive=False)],
+)
 def quit_(*_args):
     raise EOFError
 
@@ -211,10 +264,29 @@ def quit_(*_args):
     "Edit query with editor (uses $VISUAL or $EDITOR).",
     arg_type=ArgType.NO_QUERY,
     case_sensitive=True,
-    aliases=['\\e'],
+    aliases=[SpecialCommandAlias("\\e", case_sensitive=True)],
 )
-@special_command("\\clip", "<query>\\clip", "Copy query to the system clipboard.", arg_type=ArgType.NO_QUERY, case_sensitive=True)
-@special_command("\\G", "<query>\\G", "Display query results vertically.", arg_type=ArgType.NO_QUERY, case_sensitive=True)
+@special_command(
+    "\\clip",
+    "<query>\\clip",
+    "Copy query to the system clipboard.",
+    arg_type=ArgType.NO_QUERY,
+    case_sensitive=True,
+)
+@special_command(
+    "\\G",
+    "<query>\\G",
+    "Display query results vertically.",
+    arg_type=ArgType.NO_QUERY,
+    case_sensitive=True,
+)
+@special_command(
+    "\\g",
+    "<query>\\g",
+    "Display query results (mnemonic: go).",
+    arg_type=ArgType.NO_QUERY,
+    case_sensitive=True,
+)
 def stub():
     raise NotImplementedError
 
@@ -227,7 +299,7 @@ if LLM_IMPORTED:
         "Interrogate an LLM.  See \"\\llm help\".",
         arg_type=ArgType.RAW_QUERY,
         case_sensitive=True,
-        aliases=["\\ai"],
+        aliases=[SpecialCommandAlias("\\ai", case_sensitive=True)],
     )
     def llm_stub():
         raise NotImplementedError

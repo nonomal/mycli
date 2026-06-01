@@ -1,6 +1,8 @@
 import threading
 from typing import Callable
 
+import pymysql
+
 from mycli.packages.special.main import COMMANDS
 from mycli.packages.sqlresult import SQLResult
 from mycli.sqlcompleter import SQLCompleter
@@ -58,22 +60,25 @@ class CompletionRefresher:
 
         # Create a new sqlexecute method to populate the completions.
         e = sqlexecute
-        executor = SQLExecute(
-            e.dbname,
-            e.user,
-            e.password,
-            e.host,
-            e.port,
-            e.socket,
-            e.character_set,
-            e.local_infile,
-            e.ssl,
-            e.ssh_user,
-            e.ssh_host,
-            e.ssh_port,
-            e.ssh_password,
-            e.ssh_key_filename,
-        )
+        try:
+            executor = SQLExecute(
+                e.dbname,
+                e.user,
+                e.password,
+                e.host,
+                e.port,
+                e.socket,
+                e.character_set,
+                e.local_infile,
+                e.ssl,
+                e.ssh_user,
+                e.ssh_host,
+                e.ssh_port,
+                e.ssh_password,
+                e.ssh_key_filename,
+            )
+        except pymysql.err.OperationalError:
+            return
 
         # If callbacks is a single function then push it into a list.
         if callable(callbacks):
@@ -130,6 +135,11 @@ def refresh_tables(completer: SQLCompleter, executor: SQLExecute) -> None:
     table_columns_dbresult = list(executor.table_columns())
     completer.extend_relations(table_columns_dbresult, kind="tables")
     completer.extend_columns(table_columns_dbresult, kind="tables")
+
+
+@refresher("foreign_keys")
+def refresh_foreign_keys(completer: SQLCompleter, executor: SQLExecute) -> None:
+    completer.extend_foreign_keys(executor.foreign_keys())
 
 
 @refresher("enum_values")

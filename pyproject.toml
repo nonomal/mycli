@@ -9,14 +9,16 @@ authors = [{ name = "Mycli Core Team" }]
 
 dependencies = [
     "click ~= 8.3.1",
+    "clickdc ~= 0.1.1",
     "cryptography ~= 46.0.5",
     "Pygments ~= 2.19.2",
-    "prompt_toolkit>=3.0.6,<4.0.0",
+    "prompt_toolkit>=3.0.41,<4.0.0",
     "PyMySQL ~= 1.1.2",
     "sqlparse>=0.3.0,<0.6.0",
-    "sqlglot[c] ~= 30.0.0",
+    "sqlglot ~= 30.8.0",
+    "sqlglotc ~= 30.8.0",
     "configobj ~= 5.0.9",
-    "cli_helpers[styles] ~= 2.11.0",
+    "cli_helpers[styles] ~= 2.15.0",
     "wcwidth ~= 0.6.0",
     "pyperclip ~= 1.11.0",
     "pycryptodomex ~= 3.23.0",
@@ -45,7 +47,8 @@ ssh = [
     "sshtunnel ~= 0.4.0",
 ]
 llm = [
-    "llm ~= 0.28.0",
+    "llm ~= 0.30.0",
+    "pydantic_core ~= 2.41.5",              # Required by llm; force a newer version
     "setuptools == 82.*",                   # Required by llm commands to install models
     "pip == 26.*",
 ]
@@ -60,18 +63,20 @@ dev = [
     "pexpect ~= 4.9.0",
     "pytest ~= 9.0.2",
     "pytest-cov ~= 7.0.0",
+    "pytest-random-order ~= 1.2.0",
     "tox ~= 4.35.0",
     "pdbpp ~= 0.11.7",
     "paramiko ~= 3.5.1",
     "sshtunnel ~= 0.4.0",
-    "llm ~= 0.28.0",
+    "llm ~= 0.30.0",
+    "pydantic_core ~= 2.41.5",              # Required by llm; force a newer version
     "setuptools == 82.*",                   # Required by llm commands to install models
     "pip == 26.*",
     "ruff ~= 0.15.0",
 ]
 
 [project.scripts]
-mycli = "mycli.main:cli"
+mycli = "mycli.main:main"
 
 [tool.setuptools.package-data]
 mycli = ["myclirc", "AUTHORS", "SPONSORS", "TIPS"]
@@ -119,3 +124,38 @@ warn_no_return = true
 warn_unused_configs = true
 show_column_numbers = true
 exclude = ['^build/', '^dist/']
+
+[tool.tox]
+env_list = ['python']
+requires = ['tox>=4.20']
+
+[tool.tox.env_run_base]
+skip_install = true
+deps = ['uv']
+passenv = ['PYTEST_HOST',
+           'PYTEST_USER',
+           'PYTEST_PASSWORD',
+           'PYTEST_PORT',
+           'PYTEST_CHARSET']
+commands = [['uv', 'pip', 'install', '-e', '.[dev,ssh,llm]'],
+            ['coverage', 'run', '-m', 'pytest', '-v', 'test'],
+            ['coverage', 'report', '-m', '--sort=Miss'],
+            ['behave', 'test/features']]
+commands_post = [['rm', '-f', '--', './.myclirc']]
+allowlist_externals = ['rm']
+
+[tool.tox.env.style]
+skip_install = true
+deps = ['ruff']
+commands = [['ruff', 'check'],
+            ['ruff', 'format', '--diff']]
+
+[tool.pytest]
+addopts = ['--ignore=mycli/packages/paramiko_stub/__init__.py', '--random-order']
+
+[tool.coverage.run]
+source = ['mycli']
+omit = [
+    # deprecated
+    'mycli/packages/paramiko_stub/__init__.py',
+]
